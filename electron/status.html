@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'" />
+    <title>Dikey Studio</title>
+    <link rel="stylesheet" href="status.css" />
+  </head>
+  <body>
+    <main>
+      <div class="brand" aria-hidden="true"><span></span><span></span></div>
+      <div class="eyebrow">YENİ BİR AÇI</div>
+      <h1>dikey<span>.</span></h1>
+      <h2 id="heading">Stüdyon hazırlanıyor</h2>
+      <p id="message">Video motoru bu bilgisayarda başlatılıyor.<br>Birazdan yaratıcılığın için hazırız.</p>
+      <div class="spinner" id="spinner" aria-label="Yükleniyor"></div>
+      <div class="actions" id="actions" hidden>
+        <button id="retry" type="button">Yeniden dene</button>
+        <button id="logs" class="secondary" type="button">Günlük klasörünü aç</button>
+      </div>
+      <footer><span>Dosyaların sende kalır.</span><span id="version"></span></footer>
+    </main>
+    <script src="status.js"></script>
+  </body>
+</html>

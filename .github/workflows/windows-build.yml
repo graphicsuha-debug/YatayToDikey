@@ -1,0 +1,189 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ffmpeg:
+    name: Build Windows video engine from pinned sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Windows cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-mingw-w64-x86-64-posix nasm make pkg-config curl xz-utils
+
+      - name: Build FFmpeg and x264
+        run: bash scripts/build-ffmpeg.sh build/ffmpeg
+
+      - name: Package the exact corresponding sources and build recipe
+        run: |
+          mkdir -p release
+          tar -czf release/Dikey-Studio-FFmpeg-Corresponding-Source.tar.gz third_party/sources scripts/build-ffmpeg.sh
+          test -s build/ffmpeg/ffmpeg.exe
+          test -s build/ffmpeg/ffprobe.exe
+          test -s release/Dikey-Studio-FFmpeg-Corresponding-Source.tar.gz
+
+      - name: Retain Windows video engine
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-windows-x64
+          path: build/ffmpeg/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Retain matching FFmpeg and x264 source package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-corresponding-source
+          path: release/Dikey-Studio-FFmpeg-Corresponding-Source.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  windows:
+    name: Test and package Windows x64 installer
+    needs: ffmpeg
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      PYTHONUTF8: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download matching Windows video engine
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ffmpeg-windows-x64
+          path: build/ffmpeg
+
+      - name: Download corresponding sources
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ffmpeg-corresponding-source
+          path: release
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            backend/requirements-test.txt
+            backend/requirements-build.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Configure the pinned video engine
+        run: |
+          $ffmpegDirectory = Join-Path $env:GITHUB_WORKSPACE 'build\ffmpeg'
+          "DIKEY_FFMPEG_DIR=$ffmpegDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $ffmpegDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $ffmpegDirectory 'ffmpeg.exe') -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg executable validation failed.' }
+          & (Join-Path $ffmpegDirectory 'ffprobe.exe') -version
+          if ($LASTEXITCODE -ne 0) { throw 'ffprobe executable validation failed.' }
+
+      - name: Install Python build and test dependencies
+        run: |
+          python -m venv .venv
+          if ($LASTEXITCODE -ne 0) { throw 'Python environment creation failed.' }
+          & .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r backend/requirements-test.txt -r backend/requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed.' }
+
+      - name: Install frontend and desktop dependencies
+        run: npm.cmd ci
+
+      - name: Test source API and runtime paths
+        run: .\.venv\Scripts\python.exe -m unittest backend.test_app backend.test_runtime -v
+
+      - name: Build offline Windows installer
+        run: npm.cmd run dist:win
+
+      - name: Test bundled backend without Python or FFmpeg on PATH
+        run: .\.venv\Scripts\python.exe -m unittest backend.test_frozen -v
+
+      - name: Verify the packaged desktop app
+        run: |
+          $env:DIKEY_SMOKE_TEST_DIR = Join-Path $env:RUNNER_TEMP 'dikey-packaged-smoke'
+          New-Item -ItemType Directory -Path $env:DIKEY_SMOKE_TEST_DIR -Force | Out-Null
+          $applicationPath = Join-Path $env:GITHUB_WORKSPACE 'release\win-unpacked\Dikey Studio.exe'
+          if (-not (Test-Path -LiteralPath $applicationPath)) { throw 'Packaged desktop executable is missing.' }
+          $application = Start-Process -FilePath $applicationPath -ArgumentList '--disable-gpu' -WorkingDirectory (Split-Path -Parent $applicationPath) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $env:DIKEY_SMOKE_TEST_DIR 'stdout.log') -RedirectStandardError (Join-Path $env:DIKEY_SMOKE_TEST_DIR 'stderr.log') -PassThru
+          if (-not $application.WaitForExit(60000)) {
+            & taskkill.exe /PID $application.Id /T /F
+            throw 'Desktop verification timed out.'
+          }
+          $resultPath = Join-Path $env:DIKEY_SMOKE_TEST_DIR 'smoke.json'
+          if (-not (Test-Path -LiteralPath $resultPath)) { throw 'Desktop verification did not produce smoke.json.' }
+          $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+          Get-Content -LiteralPath $resultPath
+          if ($application.ExitCode -ne 0 -or -not $result.ok -or -not $result.packaged) {
+            throw 'Packaged desktop verification failed.'
+          }
+
+      - name: Create release checksums
+        run: |
+          $releaseDirectory = Join-Path $env:GITHUB_WORKSPACE 'release'
+          $installers = @(Get-ChildItem -LiteralPath $releaseDirectory -Filter 'Dikey-Studio-Setup-*-x64.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows x64 installer.' }
+          $sources = Get-Item -LiteralPath (Join-Path $releaseDirectory 'Dikey-Studio-FFmpeg-Corresponding-Source.tar.gz')
+          $checksums = @($installers[0], $sources) | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          $checksums | Set-Content -LiteralPath (Join-Path $releaseDirectory 'SHA256SUMS.txt') -Encoding utf8
+
+      - name: Retain verified installer, matching sources and checksums
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Dikey-Studio-Windows-x64
+          path: |
+            release/Dikey-Studio-Setup-*-x64.exe
+            release/Dikey-Studio-FFmpeg-Corresponding-Source.tar.gz
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Retain desktop verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-verification
+          path: |
+            ${{ runner.temp }}/dikey-packaged-smoke/smoke.json
+            ${{ runner.temp }}/dikey-packaged-smoke/smoke.png
+            ${{ runner.temp }}/dikey-packaged-smoke/stdout.log
+            ${{ runner.temp }}/dikey-packaged-smoke/stderr.log
+            ${{ runner.temp }}/dikey-packaged-smoke/user-data/data/desktop.log
+          if-no-files-found: ignore
+          retention-days: 14

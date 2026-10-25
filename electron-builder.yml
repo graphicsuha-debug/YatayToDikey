@@ -1,0 +1,58 @@
+appId: com.suhay.dikey
+productName: Dikey Studio
+copyright: Copyright © 2026 Suha Yar
+asar: true
+npmRebuild: false
+compression: maximum
+directories:
+  output: release
+  buildResources: electron/assets
+files:
+  - electron/**/*
+  - package.json
+  - '!node_modules/**/*'
+extraResources:
+  - from: build/backend/dikey-backend
+    to: backend
+    filter:
+      - '**/*'
+  - from: build/backend/ffmpeg
+    to: ffmpeg
+    filter:
+      - '**/*'
+  - from: dist
+    to: app-assets/dist
+    filter:
+      - '**/*'
+  - from: public/demo.mp4
+    to: app-assets/public/demo.mp4
+  - from: LICENSES
+    to: LICENSES
+    filter:
+      - '**/*'
+  - from: THIRD_PARTY_NOTICES.md
+    to: THIRD_PARTY_NOTICES.md
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: electron/assets/icon.ico
+  executableName: Dikey Studio
+  requestedExecutionLevel: asInvoker
+  signAndEditExecutable: true
+nsis:
+  artifactName: Dikey-Studio-Setup-${version}-${arch}.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Dikey Studio
+  runAfterFinish: true
+  installerLanguages:
+    - tr_TR
+    - en_US
+  language: 1055
+  displayLanguageSelector: false
